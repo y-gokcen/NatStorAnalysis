@@ -1,0 +1,259 @@
+---
+title: "NatStoryAnalysis"
+author: "Yasemin Gokcen"
+date: "2023-04-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Ensure that freqs is NOT loaded in with them first row as names. I load things in by clicking on them from folder GUI 
+
+Load in: freqs.csv, story1_surps.csv, ns001eeg_timecourse.csv, StoryOneOnset.csv
+
+```{r}
+freqs <- freqs %>% rename("freq" = "X4") %>% rename("code" = "X1") %>% rename("order" = "X2")%>% filter(str_detect(code, "word")) %>% rename("token" = "X3") %>% rename("freq_NA" = "X5") 
+
+#Get first story
+freqs <- freqs %>% slice(1:1073)
+```
+
+```{r}
+#Get top high/low frequencies, content words only
+freqs_lowest <- freqs
+freqs_lowest<- freqs_lowest[!duplicated(freqs_lowest[,'token']),] %>% arrange(freq) #%>% slice(1:50)
+freqs_lowest$token <- removeWords(freqs_lowest$token, stopwords("english"))
+freqs_lowest <- freqs_lowest %>% filter(token != "") %>% slice(1:50)
+freqs_lowest <- freqs_lowest$token
+
+freqs_highest <- freqs
+freqs_highest <- freqs_highest[!duplicated(freqs_highest[,'token']),]
+frqs_highest$token <- removeWords(freqs_highest$token, stopwords("english"))
+freqs_highest <- freqs_highest %>% filter(token != "") %>% slice(1:50)
+freqs_highest <- freqs_highest$token
+
+```
+
+```{r}
+#Prepare the natural stories surprisals
+nat_story_surps <- story1_surps %>% filter(word != ".") %>% filter(word != ",") %>% filter(word != "'s") %>% filter(word != "?") %>% filter(word != "'") %>% filter(word != "!") %>% filter(word != ":")  
+nat_story_surps$word <- tolower(nat_story_surps$word)
+nat_story_surps$word <- removeWords(nat_story_surps$word, stopwords("english"))
+nat_story_surps <- nat_story_surps %>% filter(word != "") %>% filter(sentid != "NA")
+
+#glitch of stop word being left in, uncomment if the word "can" is still at row 375
+#nat_story_surps <- nat_story_surps[-375,]
+
+```
+
+```{r}
+library(data.table)
+
+#transpose data frame
+df_t <- transpose(ns001eeg_timecourse)
+
+#redefine row and column names
+rownames(df_t) <- colnames(ns001eeg_timecourse)
+colnames(df_t) <- rownames(ns001eeg_timecourse)
+
+df_t <- df_t %>% add_column(word = NA) %>% add_column(label = NA) %>% slice(3616:30517)
+
+
+```
+
+```{r}
+#important file for alignment
+story_onset_filter <- StoryOneOnset %>% mutate(onset_in_ms_block = Onset * 100) %>% select(Segmentlabel, Onset, onset_in_ms_block) 
+
+story_onset_filter <- story_onset_filter %>% mutate(onset_in_ms_block = round(onset_in_ms_block))
+```
+
+```{r}
+#clean up, add easy to reference word column
+my_strings <- story_onset_filter$Segmentlabel
+pattern <- "/.*"
+cleaned_strings <- gsub(pattern, "", tolower(my_strings))
+story_onset_filter <- story_onset_filter %>% add_column(word = clean)
+```
+
+```{r}
+#More cleaning, ensure content words
+story_onset_filter <- story_onset_filter %>% filter(word != "<s>") %>% filter(word != "<")
+story_onset_filter$word <- removeWords(story_onset_filter$word, stopwords("english"))
+story_onset_filter <- story_onset_filter %>% filter(word != "")
+```
+
+```{r}
+#Align timecourse and main timecourse
+for (j in 1:nrow(story_onset_filter)) {
+  for (i in 1:nrow(df_t)) {
+    if (i == story_onset_filter$onset_in_ms_block[j]) {
+      df_t$word[i] <- story_onset_filter$word[j]
+      df_t$label[i] <- story_onset_filter$Segmentlabel[j]
+    }
+  }
+}
+#keep for future reference
+write_csv(df_t, "ns001_align.csv")
+
+#I've loaded in ns001_align at a different time at this point
+#This ensures that The beginning and end of the story with appropriate epoch spaces
+ns001_align_filter <- ns001_align[29:30517, ]
+write_csv(ns001_align_filter, "ns001_align_cut.csv")
+```
+
+```{r}
+#make a df with the desired electodes averaged over 
+names(ns001_align_cut) <- paste0("c", names(ns001_align_cut))
+ns001_cent_avg <- ns001_align_cut %>% select("c65", "c52", "c39", "c56", "c12", "c23", "c14", "c19", "c13") %>% mutate(avg = rowMeans(ns001_cent_avg))
+ns001_cent_avg <- ns001_cent_avg %>% add_column(label = NA) %>% add_column(word = NA)
+words <- story_onset_filter$Segmentlabel
+```
+
+```{r}
+#align avg df
+for (j in 1:nrow(story_onset_filter)) {
+  for (i in 1:nrow(ns001_cent_avg)) {
+    if (i == story_onset_filter$onset_in_ms_block[j]) {
+      ns001_cent_avg$word[i] <- story_onset_filter$word[j]
+      ns001_cent_avg$label[i] <- story_onset_filter$Segmentlabel[j]
+    }
+  }
+}
+```
+
+```{r}
+content_words <- story_onset_filter$Segmentlabel
+```
+
+
+```{r}
+#get erp graphs
+graph_func <- function(df, word) {
+  return(ggplot(df, aes(x = time, y = amp)) + 
+    geom_line()) +
+    ggtitle(paste0(word))
+}
+
+i = 1
+erp_graphs <- list()
+#change this based on the list you want
+for (j in content_words) {
+  row_num_new <- as.data.frame(which(ns001_cent_avg == j, arr.ind = TRUE))$row
+  
+  df_new <- data.frame(time = seq(-200, 1000, 10), amp = ns001_cent_avg$avg[(row_num_new - 20) : (row_num_new + 100)])
+  
+  erp_graphs[[i]] <- graph_func(df_new, j)
+  
+  i = i + 1
+}
+
+# Set the widths argument to a vector of 2 values, each set to 1
+widths <- rep(1, 2)
+
+# Set the number of plots per page
+plots_per_page <- 4
+
+# Create a new PDF device with 10 inch by 10 inch pages
+pdf("low_freq_plots.pdf", width = 10, height = 10)
+
+# Loop over the plot list and create multiple plots per page
+num_plots <- length(erp_graphs)
+num_pages <- ceiling(num_plots / plots_per_page)
+
+for (i in seq_len(num_pages)) {
+  start_plot <- (i - 1) * plots_per_page + 1
+  end_plot <- min(i * plots_per_page, num_plots)
+  current_plots <- erp_graphs[start_plot:end_plot]
+  
+  # Calculate the number of rows and columns for this page
+  num_rows <- min(2, length(current_plots))
+  num_cols <- ceiling(length(current_plots) / num_rows)
+  
+  # Create the plot and print it to the PDF device
+  current_plot <- ggarrange(plotlist = current_plots, nrow = num_rows, ncol = num_cols, widths = widths)
+  print(current_plot)
+}  
+
+# Close the PDF device
+dev.off()
+
+```
+
+```{r}
+#get n400s
+n400_list = list()
+i = 1
+
+for (val in words) {
+  row_num <- as.data.frame(which(ns001_cent_avg == val, arr.ind = TRUE))$row
+  
+  df <- data.frame(time = seq(-200, 1000, 10), amp = ns001_cent_avg$avg[(row_num - 20) : (row_num + 100)])
+  
+  n400_list[i] <- mean(df$amp[51:81])
+  
+  i = i + 1
+}  
+
+all_content_words <- n400_list
+```
+
+
+```{r}
+#Tibble with everything together
+ns001_with_sent_info <- tibble(n400_amp = as.numeric(all_content_words),
+                               word = nat_story_surps$word,
+                               sentid = nat_story_surps$sentid,
+                               sentpos = nat_story_surps$sentpos,
+                               surp = nat_story_surps$surp,
+                               label = story_onset_filter$Segmentlabel)
+ns001_with_sent_info <- ns001_with_sent_info %>% slice(1:505) %>% mutate(z_amp = z_func(n400_amp)) %>% mutate(z_surp = z_func(surp))
+```
+
+
+```{r}
+#get avg high and low freqs
+i = 1
+df <- data.frame(time = seq(-200, 1000, 10))
+
+for (val in low_freq_list) {
+  row_num <- as.data.frame(which(ns001_cent_avg == val, arr.ind = TRUE))$row
+  
+  df <- df %>% add_column(amp = ns001_cent_avg$avg[(row_num - 20) : (row_num + 100)])
+  
+  i = i + 1
+}  
+df <- df[,-1] %>% mutate(avg = rowMeans(df))
+
+low_avg_erp <- data.frame(time = seq(-200, 1000, 10),
+                           amp = df$avg)
+
+i = 1
+df <- data.frame(time = seq(-200, 1000, 10))
+
+for (val in high_freq_list) {
+  row_num <- as.data.frame(which(ns001_cent_avg == val, arr.ind = TRUE))$row
+  
+  df <- df %>% add_column(amp = ns001_cent_avg$avg[(row_num - 20) : (row_num + 100)])
+  
+  i = i + 1
+}  
+df <- df[,-1] %>% mutate(avg = rowMeans(df))
+
+high_avg_erp <- data.frame(time = seq(-200, 1000, 10),
+                           amp = df$avg)
+
+```
+
+```{r}
+low_vs_high <- data.frame(time = low_avg_erp$time, low = low_avg_erp$amp, high = high_avg_erp$amp)
+low_vs_high <- low_vs_high %>%
+  pivot_longer(cols = c("low", "high"), names_to = "amp_type", values_to = "amps")
+p1 <- ggplot(low_vs_high, aes(x = time, y = amps, color = amp_type)) +
+  geom_line(linewidth = 1.5)
+
+ggsave("high_vs_low_freq.pdf", p1)
+```
+
